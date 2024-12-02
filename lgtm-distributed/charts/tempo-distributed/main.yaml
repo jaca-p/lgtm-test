@@ -1,0 +1,49 @@
+---
+global:
+  clusterDomain: 'cluster.local'
+gateway:
+  enabled: true
+minio:
+  enabled: false
+storage:
+  trace:
+    backend: s3
+    s3:
+      bucket: 11426-tempo
+      endpoint: s3.us-east-2.amazonaws.com
+      insecure: true
+traces:
+  otlp:
+    http:
+      enabled: true
+    grpc:
+      enabled: true
+distributor:
+  config:
+    log_received_spans:
+      enabled: true
+    log_discarded_spans:
+      enabled: true
+serviceAccount:
+  # -- Specifies whether a ServiceAccount should be created
+  create: true
+  # -- The name of the ServiceAccount to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: tempo
+  # -- Image pull secrets for the service account
+  imagePullSecrets: []
+  # -- Annotations for the service account
+  annotations:
+    eks.amazonaws.com/role-arn: "arn:aws:iam::520666629845:role/TempoS3AccessRole"
+  automountServiceAccountToken: true
+metricsGenerator:
+  enabled: true
+  config:
+    storage:
+      remote_write:
+        - url: http://mimir-nginx.mimir.svc:80/api/v1/push
+          send_exemplars: true
+global_overrides:
+  metrics_generator_processors:
+    - service-graphs
+    - span-metrics

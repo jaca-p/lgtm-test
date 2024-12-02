@@ -1,0 +1,58 @@
+apiVersion: opentelemetry.io/v1alpha1
+kind: OpenTelemetryCollector
+metadata:
+ name: otel-collector
+spec:
+ mode: daemonset
+ config: |
+   receivers:
+     otlp:
+       protocols:
+         grpc:
+           endpoint: 0.0.0.0:4317
+         http:
+           endpoint: 0.0.0.0:4318
+     prometheus:
+       config:
+         scrape_configs:
+           - job_name: 
+   processors:
+     memory_limiter:
+       check_interval: 1s
+       limit_percentage: 75
+       spike_limit_percentage: 15
+     batch:
+       send_batch_size: 10000
+       timeout: 10s
+   exporters:
+     loki:
+       endpoint: http://loki-loki-distributed-gateway.loki.svc/loki/api/v1/push
+     otlphttp/tempo:
+       endpoint: http://tempo-distributor.tempo.svc:4318
+     otlphttp/loki:
+       endpoint: http://loki-loki-distributed-gateway.loki.svc:80/otlp
+     otlphttp/mimir:
+       endpoint: http://mimir-nginx.mimir.svc:80/otlp
+       tls:
+         insecure: true
+     prometheusremotewrite/local:
+       endpoint: http://mimir-nginx.mimir.svc:80/api/v1/push
+       resource_to_telemetry_conversion:
+         enabled: true
+       tls:
+         insecure: true
+     debug:
+   service:
+     pipelines:
+       traces:
+         receivers: [otlp]
+         processors: [memory_limiter, batch]
+         exporters: [otlphttp/tempo, debug]
+       logs:
+         receivers: [otlp]
+         processors: [memory_limiter, batch]
+         exporters: [loki, debug]
+       metrics:
+         receivers: [otlp]
+         processors: [memory_limiter, batch]
+         exporters: [otlphttp/mimir, debug]

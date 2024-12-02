@@ -1,0 +1,351 @@
+clusterRole:
+  annotations: {}
+  clusterRoleBinding:
+    annotations: {}
+    name: otel-collector
+  create: true
+  name: otel-collector
+  rules:
+  - apiGroups:
+    - ""
+    resources:
+    - pods
+    - nodes/stats
+    - nodes/proxy
+    - namespaces
+    - services
+    - cronjobs
+    - resourcequotas
+    - '*'
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - apps
+    - batch
+    - autoscaling
+    resources:
+    - '*'
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - extensions
+    resources:
+    - replicasets
+    verbs:
+    - get
+    - list
+    - watch
+command:
+  extraArgs: []
+  name: ""
+
+config:
+  exporters:
+    loki:
+      endpoint: http://loki-loki-distributed-gateway.loki.svc/loki/api/v1/push
+    otlphttp/mimir:
+      endpoint: http://mimir-nginx.mimir.svc:80/otlp
+      tls:
+        insecure: true
+    prometheusremotewrite/local:
+      endpoint: http://mimir-nginx.mimir.svc:80/api/v1/push
+      resource_to_telemetry_conversion:
+        enabled: true
+      tls:
+        insecure: true
+  extensions:
+    health_check:
+      endpoint: ${env:MY_POD_IP}:13133
+  processors:
+    attributes:
+      actions:
+        - action: insert
+          key: loki.attribute.labels
+          value: log.file.path, log.iostream, time, logtag
+    resource:
+      attributes:
+      - action: insert
+        key: loki.resource.labels
+        value: k8s.pod.name, k8s.node.name, k8s.namespace.name, k8s.container.name, k8s.container.restart_count, k8s.pod.uid
+    attributes/agent:
+      actions:
+      - action: upsert
+        key: service.namespace
+        value: agent
+      - action: upsert
+        key: service.name
+        value: otel-collector
+    batch:
+      send_batch_size: 10000
+      timeout: 10s
+    k8sattributes:
+      auth_type: serviceAccount
+      extract:
+        metadata:
+        - k8s.namespace.name
+        - k8s.pod.name
+        - k8s.pod.start_time
+        - k8s.pod.uid
+        - k8s.deployment.name
+        - k8s.daemonset.name
+        - k8s.statefulset.name
+        - k8s.cronjob.name
+        - k8s.node.name
+      pod_association:
+      - sources:
+        - from: resource_attribute
+          name: k8s.pod.ip
+      - sources:
+        - from: resource_attribute
+          name: k8s.pod.uid
+      - sources:
+        - from: connection
+    memory_limiter:
+      check_interval: 15s
+      limit_percentage: 80
+      spike_limit_percentage: 50
+    resource/agent:
+      attributes:
+      - action: upsert
+        key: service.namespace
+        value: agent
+    resource/remove_container_id:
+      attributes:
+      - action: delete
+        key: container.id
+      - action: delete
+        key: container_id
+    resourcedetection/system:
+      detectors:
+      - system
+      system:
+        hostname_sources:
+        - os
+    transform:
+      metric_statements:
+      - context: datapoint
+        statements:
+        - set(attributes["host.name"], resource.attributes["host.name"])
+        - set(attributes["process.command"], resource.attributes["process.command"])
+        - set(attributes["process.command_line"], resource.attributes["process.command_line"])
+        - set(attributes["process.executable.name"], resource.attributes["process.executable.name"])
+        - set(attributes["process.executable.path"], resource.attributes["process.executable.path"])
+        - set(attributes["process.owner"], resource.attributes["process.owner"])
+        - set(attributes["process.parent_pid"], resource.attributes["process.parent_pid"])
+        - set(attributes["process.pid"], resource.attributes["process.pid"])
+        - set(attributes["k8s_node_name"], resource.attributes["k8s.node.name"])
+  receivers:
+    filelog:
+      include: [ /var/log/pods/*/*/*.log ]   
+      start_at: beginning   
+      include_file_path: true    
+      include_file_name: false       
+      retry_on_failure:    
+        enabled: true   
+      operators:   
+        - type: router  
+          id: get-format      
+          routes:        
+            - output: parser-containerd        
+              expr: 'body matches "^[^ Z]+Z"'         
+        - type: regex_parser               
+          id: parser-containerd         
+          regex: '^(?P<time>[^ ^Z]+Z) (?P<stream>stdout|stderr) (?P<logtag>[^ ]*) ?(?P<log>.*)$' 
+          output: extract_metadata_from_filepath        
+          timestamp:          
+            parse_from: attributes.time
+            layout: '%Y-%m-%dT%H:%M:%S.%LZ'
+        - type: regex_parser
+          id: extract_metadata_from_filepath
+          regex: '^.*\/(?P<namespace>[^_]+)_(?P<pod_name>[^_]+)_(?P<uid>[a-f0-9\-]{36})\/(?P<container_name>[^\._]+)\/(?P<restart_count>\d+)\.log$'
+          parse_from: attributes["log.file.path"]
+          cache:
+            size: 128
+        - type: move
+          from: attributes.stream
+          to: attributes["log.iostream"]
+        - type: move
+          from: attributes.container_name
+          to: resource["k8s.container.name"]
+        - type: move
+          from: attributes.namespace
+          to: resource["k8s.namespace.name"]
+        - type: move
+          from: attributes.pod_name
+          to: resource["k8s.pod.name"]
+        - type: move
+          from: attributes.restart_count
+          to: resource["k8s.container.restart_count"]
+        - type: move
+          from: attributes.uid
+          to: resource["k8s.pod.uid"]
+        - type: remove
+          field: attributes.time
+        - type: move
+          from: attributes.log
+          to: body
+    hostmetrics/agent:
+      collection_interval: 10s
+      scrapers:
+        cpu:
+          metrics:
+            system.cpu.logical.count:
+              enabled: true
+        disk: null
+        filesystem:
+          metrics:
+            system.filesystem.utilization:
+              enabled: true
+        load: null
+        memory:
+          metrics:
+            system.memory.limit:
+              enabled: true
+            system.memory.utilization:
+              enabled: true
+        network: null
+        paging: null
+        process:
+          metrics:
+            process.cpu.utilization:
+              enabled: true
+            process.memory.utilization:
+              enabled: true
+            process.paging.faults:
+              enabled: true
+            process.threads:
+              enabled: true
+          mute_process_user_error: true
+        processes: null
+    k8s_cluster:
+      allocatable_types_to_report:
+      - cpu
+      - memory
+      - storage
+      - ephemeral-storage
+      collection_interval: 15s
+      node_conditions_to_report:
+      - Ready
+      - MemoryPressure
+    kubeletstats:
+      auth_type: serviceAccount
+      endpoint: https://${env:NODE_IP}:10250
+      extra_metadata_labels:
+      - container.id
+      insecure_skip_verify: true
+      metric_groups:
+      - container
+      - pod
+      - volume
+      - node
+  service:
+    extensions:
+    - health_check
+    pipelines:
+      logs:
+        exporters:
+        - loki
+        processors:
+        - batch
+        - resource
+        - attributes
+        receivers:
+        - filelog
+      metrics:
+        exporters:
+        - otlphttp/mimir
+        processors:
+        - attributes/agent
+        - resourcedetection/system
+        - transform
+        receivers:
+        - hostmetrics/agent
+      metrics/pods:
+        exporters:
+        - prometheusremotewrite/local
+        processors:
+        - resource/remove_container_id
+        receivers:
+        - kubeletstats
+        - k8s_cluster
+extraEnvs:
+- name: KUBE_NODE_NAME
+  valueFrom:
+    fieldRef:
+      apiVersion: v1
+      fieldPath: spec.nodeName
+- name: NODE_IP
+  valueFrom:
+    fieldRef:
+      apiVersion: v1
+      fieldPath: status.hostIP
+hostNetwork: false
+image:
+  digest: ""
+  pullPolicy: IfNotPresent
+  repository: otel/opentelemetry-collector-contrib
+  tag: ""
+livenessProbe:
+  httpGet:
+    path: /
+    port: 13133
+mode: daemonset
+ports:
+  metrics:
+    containerPort: 8888
+    enabled: false
+    protocol: TCP
+    servicePort: 8888
+  otlp:
+    appProtocol: grpc
+    containerPort: 4317
+    enabled: true
+    hostPort: 4317
+    protocol: TCP
+    servicePort: 4317
+  otlp-http:
+    containerPort: 4318
+    enabled: true
+    hostPort: 4318
+    protocol: TCP
+    servicePort: 4318
+presets:
+  clusterMetrics:
+    enabled: false
+  hostMetrics:
+    enabled: true
+  kubeletMetrics:
+    enabled: true
+  kubernetesAttributes:
+    enabled: true
+    extractAllPodAnnotations: false
+    extractAllPodLabels: false
+  kubernetesEvents:
+    enabled: false
+  logsCollection:
+    enabled: true
+    includeCollectorLogs: true
+    maxRecombineLogSize: 409600
+    storeCheckpoints: false
+readinessProbe:
+  httpGet:
+    path: /
+    port: 13133
+replicaCount: 1
+revisionHistoryLimit: 10
+serviceAccount:
+  annotations: {}
+  create: true
+  name: otel-collector
+serviceMonitor:
+  enabled: false
+  extraLabels: {}
+  metricRelabelings: []
+  metricsEndpoints:
+  - interval: 15s
+    port: metrics
+  relabelings: []
